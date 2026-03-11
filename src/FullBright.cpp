@@ -37,6 +37,7 @@ char const* kDefaultLevelRenderPattern =
     "48 8B C4 48 89 58 ? 55 56 57 41 54 41 55 41 56 41 57 48 8D A8 ? ? ? ? 48 81 EC ? ? ? ? 0F 29 70 ? 0F 29 78 ? 44 0F 29 40 ? 44 0F 29 48 ? 48 8B 05 ? ? ? ? 48 33 C4 48 89 85 ? ? ? ? 4D 8B E8 4C 8B E2 4C 8B F9";
 
 std::atomic<bool> g_enabled{true};
+std::atomic<bool> g_runtimeEnabled{true};
 std::atomic<bool> g_patternScanEnabled{true};
 std::atomic<double> g_forceBrightness{10.0};
 std::atomic<unsigned long long> g_hookTargetRva{0};
@@ -48,6 +49,15 @@ std::atomic<bool> g_phaseGateEnabled{true};
 std::atomic<bool> g_phaseGateFallbackToCaller{false};
 char g_phaseScreenPattern[256]{};
 char g_phaseLevelPattern[256]{};
+char g_toggleHotkey[64] = "F8";
+std::atomic<int> g_toggleVirtualKey{VK_F8};
+std::atomic<bool> g_toggleNeedCtrl{false};
+std::atomic<bool> g_toggleNeedAlt{false};
+std::atomic<bool> g_toggleNeedShift{false};
+std::atomic<bool> g_toggleHotkeyValid{true};
+std::atomic<bool> g_toggleHotkeyWasDown{false};
+std::atomic<bool> g_hotkeyThreadStop{false};
+HANDLE g_hotkeyThread = nullptr;
 
 std::atomic<bool> g_hookActive{false};
 std::atomic<unsigned int> g_hookHitCount{0};
@@ -87,6 +97,15 @@ std::atomic<bool> g_phaseFallbackApplied{false};
 std::atomic<int> g_uiRenderDepth{0};
 std::atomic<int> g_worldRenderDepth{0};
 std::atomic<bool> g_phaseHooksLogged{false};
+
+bool InstallPhaseHooks();
+void UninstallPhaseHooks();
+bool InstallGetGammaHook();
+void UninstallGetGammaHook();
+DWORD WINAPI CandidateWatchdogThread(LPVOID);
+void ParseAndApplyToggleHotkey();
+DWORD WINAPI HotkeyPollThread(LPVOID);
+void ApplyRuntimeEnabled(bool enabled);
 
 void DebugLog(char const* fmt, ...) {
     char buffer[1024]{};
@@ -216,6 +235,7 @@ void SaveConfigJson() {
         "  \"callerFilterRva\": \"%s\",\n"
         "  \"phaseGateEnabled\": %s,\n"
         "  \"phaseGateFallbackToCaller\": %s,\n"
+        "  \"toggleHotkey\": \"%s\",\n"
         "  \"phaseScreenPattern\": \"%s\",\n"
         "  \"phaseLevelPattern\": \"%s\",\n"
         "  \"patternScanEnabled\": %s,\n"
@@ -229,6 +249,7 @@ void SaveConfigJson() {
         callerFilterRvaBuf,
         phaseGateBuf,
         phaseGateFallbackBuf,
+        g_toggleHotkey,
         g_phaseScreenPattern,
         g_phaseLevelPattern,
         g_patternScanEnabled.load(std::memory_order_relaxed) ? "true" : "false",
@@ -294,6 +315,7 @@ void LoadConfigJson() {
     char callerFilterRvaBuf[64] = "0x0";
     char phaseGateBuf[32] = "true";
     char phaseGateFallbackBuf[32] = "true";
+    char toggleHotkeyBuf[64] = "F8";
     char phaseScreenPatternBuf[256] = "";
     char phaseLevelPatternBuf[256] = "";
     char patternBuf[32] = "true";
@@ -308,6 +330,7 @@ void LoadConfigJson() {
     extract("callerFilterRva", callerFilterRvaBuf, _countof(callerFilterRvaBuf));
     extract("phaseGateEnabled", phaseGateBuf, _countof(phaseGateBuf));
     extract("phaseGateFallbackToCaller", phaseGateFallbackBuf, _countof(phaseGateFallbackBuf));
+    extract("toggleHotkey", toggleHotkeyBuf, _countof(toggleHotkeyBuf));
     extract("phaseScreenPattern", phaseScreenPatternBuf, _countof(phaseScreenPatternBuf));
     extract("phaseLevelPattern", phaseLevelPatternBuf, _countof(phaseLevelPatternBuf));
     extract("patternScanEnabled", patternBuf, _countof(patternBuf));
@@ -324,6 +347,7 @@ void LoadConfigJson() {
         strcmp(phaseGateFallbackBuf, "false") != 0 && strcmp(phaseGateFallbackBuf, "0") != 0,
         std::memory_order_relaxed
     );
+    strncpy_s(g_toggleHotkey, _countof(g_toggleHotkey), toggleHotkeyBuf, _TRUNCATE);
     g_forceBrightness.store(atof(brightnessBuf), std::memory_order_relaxed);
 
     if (phaseScreenPatternBuf[0]) {
@@ -354,14 +378,259 @@ void LoadConfigJson() {
         g_forceBrightness.store(25.0, std::memory_order_relaxed);
     }
 
+    ParseAndApplyToggleHotkey();
+
     DebugLog(
-        "[FullBright] config: enabled=%d hookMode=getGamma hookTargetRva=0x%llx patternScan=%d phaseGate=%d forceBrightness=%.3f\n",
+        "[FullBright] config: enabled=%d hookMode=getGamma hookTargetRva=0x%llx patternScan=%d phaseGate=%d toggleHotkey=%s forceBrightness=%.3f\n",
         g_enabled.load(std::memory_order_relaxed) ? 1 : 0,
         g_hookTargetRva.load(std::memory_order_relaxed),
         g_patternScanEnabled.load(std::memory_order_relaxed) ? 1 : 0,
         g_phaseGateEnabled.load(std::memory_order_relaxed) ? 1 : 0,
+        g_toggleHotkey,
         g_forceBrightness.load(std::memory_order_relaxed)
     );
+}
+
+std::string ToUpperAscii(char const* s) {
+    std::string out;
+    if (!s) return out;
+    out.assign(s);
+    for (char& ch : out) {
+        ch = static_cast<char>(std::toupper(static_cast<unsigned char>(ch)));
+    }
+    return out;
+}
+
+std::string TrimAscii(std::string s) {
+    size_t l = 0;
+    while (l < s.size() && std::isspace(static_cast<unsigned char>(s[l]))) ++l;
+    size_t r = s.size();
+    while (r > l && std::isspace(static_cast<unsigned char>(s[r - 1]))) --r;
+    return s.substr(l, r - l);
+}
+
+bool ParseToggleHotkeyToken(std::string const& token, int& outVk) {
+    if (token.empty()) return false;
+    if (token.size() == 1) {
+        char c = token[0];
+        if (c >= 'A' && c <= 'Z') {
+            outVk = static_cast<int>(c);
+            return true;
+        }
+        if (c >= '0' && c <= '9') {
+            outVk = static_cast<int>(c);
+            return true;
+        }
+    }
+
+    if (token == "SPACE") {
+        outVk = VK_SPACE;
+        return true;
+    }
+    if (token == "TAB") {
+        outVk = VK_TAB;
+        return true;
+    }
+    if (token == "ENTER" || token == "RETURN") {
+        outVk = VK_RETURN;
+        return true;
+    }
+    if (token == "ESC" || token == "ESCAPE") {
+        outVk = VK_ESCAPE;
+        return true;
+    }
+    if (token == "BACKSPACE") {
+        outVk = VK_BACK;
+        return true;
+    }
+    if (token == "INSERT") {
+        outVk = VK_INSERT;
+        return true;
+    }
+    if (token == "DELETE") {
+        outVk = VK_DELETE;
+        return true;
+    }
+    if (token == "HOME") {
+        outVk = VK_HOME;
+        return true;
+    }
+    if (token == "END") {
+        outVk = VK_END;
+        return true;
+    }
+    if (token == "PGUP" || token == "PAGEUP") {
+        outVk = VK_PRIOR;
+        return true;
+    }
+    if (token == "PGDN" || token == "PAGEDOWN") {
+        outVk = VK_NEXT;
+        return true;
+    }
+    if (token == "UP") {
+        outVk = VK_UP;
+        return true;
+    }
+    if (token == "DOWN") {
+        outVk = VK_DOWN;
+        return true;
+    }
+    if (token == "LEFT") {
+        outVk = VK_LEFT;
+        return true;
+    }
+    if (token == "RIGHT") {
+        outVk = VK_RIGHT;
+        return true;
+    }
+
+    if (token.size() >= 2 && token[0] == 'F') {
+        int n = atoi(token.c_str() + 1);
+        if (n >= 1 && n <= 24) {
+            outVk = VK_F1 + (n - 1);
+            return true;
+        }
+    }
+
+    if (token.size() == 4 && token[0] == 'N' && token[1] == 'U' && token[2] == 'M' && token[3] >= '0' && token[3] <= '9') {
+        outVk = VK_NUMPAD0 + (token[3] - '0');
+        return true;
+    }
+    if (token.size() == 7 && token.rfind("NUMPAD", 0) == 0) {
+        char d = token[6];
+        if (d >= '0' && d <= '9') {
+            outVk = VK_NUMPAD0 + (d - '0');
+            return true;
+        }
+    }
+
+    return false;
+}
+
+void ParseAndApplyToggleHotkey() {
+    std::string src = ToUpperAscii(g_toggleHotkey);
+    src = TrimAscii(src);
+    if (src.empty()) {
+        src = "F8";
+        strncpy_s(g_toggleHotkey, _countof(g_toggleHotkey), src.c_str(), _TRUNCATE);
+    }
+
+    bool needCtrl = false;
+    bool needAlt = false;
+    bool needShift = false;
+    int keyVk = 0;
+
+    size_t start = 0;
+    while (start < src.size()) {
+        size_t plus = src.find('+', start);
+        std::string part = src.substr(start, plus == std::string::npos ? std::string::npos : plus - start);
+        part = TrimAscii(part);
+        if (!part.empty()) {
+            if (part == "CTRL" || part == "CONTROL") {
+                needCtrl = true;
+            } else if (part == "ALT") {
+                needAlt = true;
+            } else if (part == "SHIFT") {
+                needShift = true;
+            } else {
+                int parsedVk = 0;
+                if (!ParseToggleHotkeyToken(part, parsedVk)) {
+                    g_toggleHotkeyValid.store(false, std::memory_order_relaxed);
+                    g_toggleVirtualKey.store(VK_F8, std::memory_order_relaxed);
+                    g_toggleNeedCtrl.store(false, std::memory_order_relaxed);
+                    g_toggleNeedAlt.store(false, std::memory_order_relaxed);
+                    g_toggleNeedShift.store(false, std::memory_order_relaxed);
+                    strncpy_s(g_toggleHotkey, _countof(g_toggleHotkey), "F8", _TRUNCATE);
+                    DebugLog("[FullBright] invalid toggleHotkey token '%s'; fallback to F8\n", part.c_str());
+                    return;
+                }
+                keyVk = parsedVk;
+            }
+        }
+        if (plus == std::string::npos) break;
+        start = plus + 1;
+    }
+
+    if (keyVk == 0) {
+        keyVk = VK_F8;
+        strncpy_s(g_toggleHotkey, _countof(g_toggleHotkey), "F8", _TRUNCATE);
+    }
+
+    g_toggleVirtualKey.store(keyVk, std::memory_order_relaxed);
+    g_toggleNeedCtrl.store(needCtrl, std::memory_order_relaxed);
+    g_toggleNeedAlt.store(needAlt, std::memory_order_relaxed);
+    g_toggleNeedShift.store(needShift, std::memory_order_relaxed);
+    g_toggleHotkeyValid.store(true, std::memory_order_relaxed);
+}
+
+bool IsVkDown(int vk) {
+    return (GetAsyncKeyState(vk) & 0x8000) != 0;
+}
+
+bool IsToggleHotkeyDown() {
+    if (!g_toggleHotkeyValid.load(std::memory_order_relaxed)) return false;
+
+    int vk = g_toggleVirtualKey.load(std::memory_order_relaxed);
+    if (vk <= 0 || !IsVkDown(vk)) return false;
+
+    if (g_toggleNeedCtrl.load(std::memory_order_relaxed) && !(IsVkDown(VK_CONTROL) || IsVkDown(VK_LCONTROL) || IsVkDown(VK_RCONTROL))) {
+        return false;
+    }
+    if (g_toggleNeedAlt.load(std::memory_order_relaxed) && !(IsVkDown(VK_MENU) || IsVkDown(VK_LMENU) || IsVkDown(VK_RMENU))) {
+        return false;
+    }
+    if (g_toggleNeedShift.load(std::memory_order_relaxed) && !(IsVkDown(VK_SHIFT) || IsVkDown(VK_LSHIFT) || IsVkDown(VK_RSHIFT))) {
+        return false;
+    }
+
+    return true;
+}
+
+void ProcessHotkeyToggleEdge() {
+    bool down = IsToggleHotkeyDown();
+    bool wasDown = g_toggleHotkeyWasDown.exchange(down, std::memory_order_relaxed);
+    if (down && !wasDown) {
+        bool nowEnabled = !g_runtimeEnabled.load(std::memory_order_relaxed);
+        ApplyRuntimeEnabled(nowEnabled);
+        SaveConfigJson();
+        DebugLog(
+            "[FullBright] toggle hotkey (%s) -> enabled=%d\n",
+            g_toggleHotkey,
+            nowEnabled ? 1 : 0
+        );
+    }
+}
+
+void ApplyRuntimeEnabled(bool enabled) {
+    g_enabled.store(enabled, std::memory_order_relaxed);
+    g_runtimeEnabled.store(enabled, std::memory_order_relaxed);
+
+    if (enabled) {
+        bool phaseReady = InstallPhaseHooks();
+        if (g_phaseGateEnabled.load(std::memory_order_relaxed) && !phaseReady) {
+            g_phaseGateEnabled.store(false, std::memory_order_relaxed);
+        }
+        if (!g_hookActive.load(std::memory_order_relaxed)) {
+            (void)InstallGetGammaHook();
+        }
+        g_watchdogStop.store(false, std::memory_order_relaxed);
+        if (!g_watchdogThread) {
+            g_watchdogThread = CreateThread(nullptr, 0, CandidateWatchdogThread, nullptr, 0, nullptr);
+        }
+    } else {
+        UninstallPhaseHooks();
+        UninstallGetGammaHook();
+    }
+}
+
+DWORD WINAPI HotkeyPollThread(LPVOID) {
+    while (!g_hotkeyThreadStop.load(std::memory_order_relaxed)) {
+        if (g_initialized.load(std::memory_order_relaxed)) {
+            ProcessHotkeyToggleEdge();
+        }
+        Sleep(25);
+    }
+    return 0;
 }
 
 void* ResolveByRva(unsigned long long rva) {
@@ -1503,7 +1772,14 @@ __declspec(dllexport) int FullBrightInit(HINSTANCE self) {
     g_phaseScreenHitCount.store(0, std::memory_order_relaxed);
     g_phaseLevelHitCount.store(0, std::memory_order_relaxed);
     g_phaseFallbackApplied.store(false, std::memory_order_relaxed);
+    g_toggleHotkeyWasDown.store(false, std::memory_order_relaxed);
+    g_runtimeEnabled.store(g_enabled.load(std::memory_order_relaxed), std::memory_order_relaxed);
     g_initialized.store(true, std::memory_order_relaxed);
+
+    g_hotkeyThreadStop.store(false, std::memory_order_relaxed);
+    if (!g_hotkeyThread) {
+        g_hotkeyThread = CreateThread(nullptr, 0, HotkeyPollThread, nullptr, 0, nullptr);
+    }
 
     if (!g_enabled.load(std::memory_order_relaxed)) {
         DebugLog("[FullBright] disabled by config; skip hook install\n");
@@ -1523,6 +1799,10 @@ __declspec(dllexport) int FullBrightInit(HINSTANCE self) {
 }
 
 __declspec(dllexport) int FullBrightTick() {
+    if (!g_initialized.load(std::memory_order_relaxed)) {
+        return 0;
+    }
+    ProcessHotkeyToggleEdge();
     return 0;
 }
 
@@ -1531,6 +1811,13 @@ __declspec(dllexport) int FullBrightCleanup() {
         return 0;
     }
     g_enabled.store(false, std::memory_order_relaxed);
+    g_runtimeEnabled.store(false, std::memory_order_relaxed);
+    g_hotkeyThreadStop.store(true, std::memory_order_relaxed);
+    if (g_hotkeyThread) {
+        WaitForSingleObject(g_hotkeyThread, 300);
+        CloseHandle(g_hotkeyThread);
+        g_hotkeyThread = nullptr;
+    }
     g_watchdogStop.store(true, std::memory_order_relaxed);
     if (g_watchdogThread) {
         WaitForSingleObject(g_watchdogThread, 200);

@@ -55,10 +55,23 @@ Main keys used by current implementation:
 - `callerFilterRva`
 - `phaseGateEnabled`
 - `phaseGateFallbackToCaller`
+- `toggleHotkey`
 - `phaseScreenPattern`
 - `phaseLevelPattern`
 - `patternScanEnabled`
 - `forceBrightness`
+
+### Hotkey format (`toggleHotkey`)
+
+Supported forms:
+
+- Single letter: `"F"`, `"K"`
+- Number key: `"1"`, `"9"`
+- Function key: `"F8"`, `"F10"`
+- Modifier combo: `"ALT+F8"`, `"CTRL+1"`, `"SHIFT+K"`
+- Multiple modifiers: `"CTRL+ALT+K"`, `"CTRL+SHIFT+1"`
+
+Pressing the toggle hotkey switches FullBright on/off at runtime and updates `enabled` in JSON.
 
 ## Compatibility note
 

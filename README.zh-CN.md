@@ -53,10 +53,23 @@ xmake
 - `callerFilterRva`
 - `phaseGateEnabled`
 - `phaseGateFallbackToCaller`
+- `toggleHotkey`
 - `phaseScreenPattern`
 - `phaseLevelPattern`
 - `patternScanEnabled`
 - `forceBrightness`
+
+### 热键格式（`toggleHotkey`）
+
+支持写法：
+
+- 单字母：`"F"`、`"K"`
+- 数字键：`"1"`、`"9"`
+- 功能键：`"F8"`、`"F10"`
+- 组合键：`"ALT+F8"`、`"CTRL+1"`、`"SHIFT+K"`
+- 多修饰键：`"CTRL+ALT+K"`、`"CTRL+SHIFT+1"`
+
+按下热键后可在运行时切换 FullBright 开/关，并同步更新 JSON 里的 `enabled`。
 
 ## 兼容性说明
 
