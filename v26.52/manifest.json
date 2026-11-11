@@ -1,0 +1,6 @@
+{
+  "name": "FullBright",
+  "entry": "FullBright.dll",
+  "version": "0.1.0-test3-leftalt",
+  "type": "preload-native"
+}

@@ -1,0 +1,4 @@
+* text=auto eol=lf
+v26.52/src/** -text whitespace=cr-at-eol
+v26.52/include/** -text whitespace=cr-at-eol
+v26.52/vendor/** -text -whitespace

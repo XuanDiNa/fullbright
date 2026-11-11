@@ -1,0 +1,64 @@
+{
+  "schemaVersion": 5,
+  "plugin": {
+    "id": "FullBright",
+    "entry": "FullBright.dll",
+    "versions": [
+      "0.1.0-test3-leftalt"
+    ]
+  },
+  "config": {
+    "file": "config.json",
+    "reload": "hot"
+  },
+  "fields": [
+    {
+      "path": "/enabled",
+      "type": "boolean",
+      "default": true,
+      "label": {
+        "en_US": "Enabled",
+        "zh_TW": "啟用",
+        "zh_CN": "启用"
+      },
+      "description": {
+        "en_US": "Override the gamma result locally. Disabled returns the vanilla value without rewriting your game settings.",
+        "zh_TW": "只在本機覆寫 Gamma；停用即回傳原版值，不改寫遊戲亮度設定。",
+        "zh_CN": "仅在本机覆盖 Gamma；停用即返回原版值，不改写游戏亮度设置。"
+      }
+    },
+    {
+      "path": "/brightness",
+      "type": "integer",
+      "default": 12,
+      "min": 1,
+      "max": 25,
+      "step": 1,
+      "label": {
+        "en_US": "Brightness",
+        "zh_TW": "亮度",
+        "zh_CN": "亮度"
+      },
+      "description": {
+        "en_US": "Gamma override from 1 to 25, not a percentage. Apply to update it live. This menu edits whole numbers.",
+        "zh_TW": "Gamma 覆寫值 1–25，並非百分比。套用後即時更新；此選單使用整數。",
+        "zh_CN": "Gamma 覆盖值 1–25，并非百分比。应用后实时更新；此菜单使用整数。"
+      }
+    },
+    {
+      "path": "/toggleKey",
+      "type": "binding",
+      "default": "NONE",
+      "label": {
+        "en_US": "Toggle key",
+        "zh_TW": "開關快捷鍵",
+        "zh_CN": "开关快捷键"
+      },
+      "description": {
+        "en_US": "Keyboard shortcut; Ctrl/Shift/Left Alt combinations supported. Escape clears the binding; Backspace is bindable.",
+        "zh_TW": "鍵盤快捷鍵，支援 Ctrl／Shift／左 Alt 組合；Esc 解除綁定，Backspace 可綁定。",
+        "zh_CN": "键盘快捷键，支持 Ctrl／Shift／左 Alt 组合；Esc 解除绑定，Backspace 可绑定。"
+      }
+    }
+  ]
+}

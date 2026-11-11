@@ -1,0 +1,10 @@
+{
+  "id": "FullBright",
+  "name": "FullBright",
+  "version": "0.1.0-test3-leftalt",
+  "author": "XuanDiNa",
+  "dll": "FullBright.dll",
+  "description": "Client-side gamma brightness with live settings and an optional toggle key for Minecraft Bedrock 1.26.52.03.",
+  "config": "config.json",
+  "schema": "config.schema.json"
+}
